@@ -1,0 +1,7 @@
+# Paste your Hinglish Mutual Fund / SIP knowledge base content here.
+# Example format:
+#
+# Q: SIP kya hota hai?
+# A: SIP ka matlab hai Systematic Investment Plan. Ye ek tarika hai mutual funds mein invest karne ka...
+#
+# [Paste your content below]

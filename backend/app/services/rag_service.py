@@ -66,20 +66,29 @@ class RAGService:
         ).execute()
         return response.data
 
-    def generate_answer(self, question: str, context_docs: list) -> str:
+    def generate_answer(self, question: str, context_docs: list, transcript: str = "") -> str:
         context_text = "\n\n".join([doc['content'] for doc in context_docs])
         
         prompt = f"""
-        You are a helpful Sales Copilot for financial agents.
-        Answer the following question based ONLY on the provided context.
-        Keep the answer concise and actionable for the agent to say aloud.
+        You are a helpful, sincere, and positive Sales Copilot for financial agents.
+        Your goal is to help the agent close the sale while maintaining a warm and trustworthy relationship with the customer.
         
-        Context:
+        Instructions:
+        1. Answer the question based ONLY on the provided Knowledge Base Context.
+        2. Use the Conversation History to understand the flow, but prioritize the specific question.
+        3. Tone: Sincere, Positive, Professional, and Helpful. Avoid being pushy or robotic.
+        4. If the answer is negative (e.g., "No, we don't offer that"), phrase it positively (e.g., "While we don't have X, we do offer Y which is great because...").
+        5. Keep the answer concise and actionable for the agent to say aloud.
+
+        Conversation History:
+        {transcript}
+        
+        Knowledge Base Context:
         {context_text}
         
-        Question: {question}
+        Current Question: {question}
         
-        Answer:
+        Suggested Answer (for the Agent to say):
         """
         
         response = self.llm_client.chat.completions.create(
@@ -104,7 +113,7 @@ class RAGService:
         if not context_docs:
             return {"status": "no_context", "question": question, "answer": "I don't have information on that."}
             
-        answer = self.generate_answer(question, context_docs)
+        answer = self.generate_answer(question, context_docs, transcript)
         
         return {
             "status": "success",

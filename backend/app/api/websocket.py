@@ -1,5 +1,6 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from app.services.deepgram_service import DeepgramService
+from app.services.whisper_service import WhisperService
 from app.core.state import transcript_store
 import logging
 import json
@@ -13,12 +14,19 @@ async def websocket_endpoint(
     session_id: str = Query(...),
     agent_name: str = Query("Agent"),
     lead_name: str = Query("Lead"),
-    language: str = Query("en")
+    language: str = Query("en"),
+    engine: str = Query("whisper")  # "deepgram" or "whisper"
 ):
-    print(f"New WebSocket connection request: {session_id} (Agent: {agent_name}, Lead: {lead_name}, Language: {language})")
+    print(f"New WebSocket connection request: {session_id} (Agent: {agent_name}, Lead: {lead_name}, Language: {language}, Engine: {engine})")
     await websocket.accept()
     print(f"WebSocket accepted: {session_id}")
-    deepgram_service = DeepgramService()
+    
+    # Select transcription engine
+    if engine.lower() == "whisper":
+        service = WhisperService(model_name="base.en", n_threads=6)
+    else:
+        service = DeepgramService()
+    
     dg_connection = None
     
     # Initialize transcript store for this session
@@ -49,7 +57,7 @@ async def websocket_endpoint(
             async def send_text(self, data: str):
                 try:
                     msg = json.loads(data)
-                    if msg.get("type") == "transcript" and msg.get("is_final"):
+                    if msg.get("type") == "transcript":
                         # Map Speaker ID to Name
                         speaker_id = msg.get("speaker")
                         speaker_name = "Unknown"
@@ -64,16 +72,28 @@ async def websocket_endpoint(
                             
                         msg["speaker_name"] = speaker_name
                         
-                        # Store in transcript store (optional: store with name)
-                        transcript_store[session_id].append(f"{speaker_name}: {msg.get('data')}")
+                        # Store in transcript store (only final transcriptions)
+                        if msg.get("is_final"):
+                            transcript_store[session_id].append(f"{speaker_name}: {msg.get('data')}")
                         
                         # Send modified JSON
-                        await self.ws.send_text(json.dumps(msg))
-                        return
+                        data = json.dumps(msg)
                 except Exception as e:
-                    print(f"Error mapping speaker: {e}")
+                    logger.warning(f"Error processing transcript: {e}")
                     pass
-                await self.ws.send_text(data)
+                
+                try:
+                    # Send the message - let websocket handle state checking
+                    await self.ws.send_text(data)
+                except RuntimeError as e:
+                    # WebSocket already closed - gracefully ignore
+                    if "websocket.send" in str(e) or "connection" in str(e).lower():
+                        logger.debug(f"WebSocket closed before sending: {e}")
+                    else:
+                        logger.error(f"Error sending text: {e}")
+                except Exception as e:
+                    logger.warning(f"Failed to send transcription: {e}")
+                    
             async def receive_bytes(self):
                 data = await self.ws.receive_bytes()
                 # print(f"Received {len(data)} bytes from client") # Verbose
@@ -82,10 +102,10 @@ async def websocket_endpoint(
 
         wrapper = WebSocketWrapper(websocket)
         
-        print("Starting Deepgram transcription...")
+        print(f"Starting {engine} transcription...")
         # The new start_transcription handles the loop internally
-        await deepgram_service.start_transcription(wrapper, language)
-        print("Deepgram transcription finished.")
+        await service.start_transcription(wrapper, language)
+        print(f"{engine} transcription finished.")
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {session_id}")

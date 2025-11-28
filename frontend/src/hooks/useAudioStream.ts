@@ -1,8 +1,32 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
+// Helper function to calculate audio fingerprint
+function calculateFingerprint(audioBuffer: ArrayBuffer): { energy: number, frequency: number } {
+    const int16View = new Int16Array(audioBuffer);
+    
+    // Calculate energy (RMS)
+    let energySum = 0;
+    for (let i = 0; i < int16View.length; i++) {
+        const normalized = int16View[i] / 32768;
+        energySum += normalized * normalized;
+    }
+    const energy = Math.sqrt(energySum / int16View.length);
+    
+    // Calculate frequency (zero crossing rate)
+    let zeroCrossings = 0;
+    for (let i = 1; i < int16View.length; i++) {
+        if ((int16View[i - 1] < 0 && int16View[i] >= 0) || (int16View[i - 1] >= 0 && int16View[i] < 0)) {
+            zeroCrossings++;
+        }
+    }
+    const frequency = zeroCrossings / int16View.length;
+    
+    return { energy, frequency };
+}
+
 export const useAudioStream = () => {
     const [isConnected, setIsConnected] = useState(false);
-    const [transcript, setTranscript] = useState<{ text: string, speaker: number, speaker_name?: string }[]>([]);
+    const [transcript, setTranscript] = useState<{ text: string, speaker: number, speaker_name?: string, sentiment?: string, profanity?: boolean }[]>([]);
     const [sessionId, setSessionId] = useState<string>("");
     const socketRef = useRef<WebSocket | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -25,7 +49,7 @@ export const useAudioStream = () => {
             });
 
             // Connect to WebSocket with names and language
-            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`);
+            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}&engine=whisper`);
 
             ws.onopen = () => {
                 setIsConnected(true);
@@ -34,11 +58,13 @@ export const useAudioStream = () => {
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.type === 'transcript' && data.is_final) {
+                if (data.type === 'transcript') {
                     setTranscript(prev => [...prev, {
                         text: data.data,
                         speaker: data.speaker,
-                        speaker_name: data.speaker_name
+                        speaker_name: data.speaker_name,
+                        sentiment: data.sentiment,
+                        profanity: data.profanity_detected
                     }]);
                 }
             };
@@ -73,7 +99,7 @@ export const useAudioStream = () => {
     const streamAudioFile = useCallback(async (file: File, agentName: string, leadName: string, language: string = "en") => {
         try {
             // Connect to WebSocket with names and language
-            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`);
+            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}&engine=whisper`);
             socketRef.current = ws;
 
             ws.onopen = async () => {

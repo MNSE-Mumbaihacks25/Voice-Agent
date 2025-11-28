@@ -6,13 +6,14 @@ router = APIRouter()
 
 class AssistRequest(BaseModel):
     session_id: str
+    trigger_word: str | None = None
 
 @router.post("/assist")
 async def assist_agent(request: AssistRequest):
-    print(f"Assist request received for session: {request.session_id}")
+    print(f"Assist request received for session: {request.session_id} (Trigger: {request.trigger_word})")
     service = RAGService()
     try:
-        result = await service.process_assist_request(request.session_id)
+        result = await service.process_assist_request(request.session_id, request.trigger_word)
         print(f"RAG Result: {result}")
         return result
     except Exception as e:

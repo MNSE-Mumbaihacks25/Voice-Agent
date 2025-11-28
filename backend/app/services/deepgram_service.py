@@ -27,11 +27,15 @@ class DeepgramService:
         # Using channels=1 (Downmix) for robust diarization
         url = f"wss://api.deepgram.com/v1/listen?model={model}&language={language}&smart_format=true&channels=1&interim_results=true&utterance_end_ms=1500&vad_events=true&diarize=true"
 
-        print(f"Connecting to Deepgram: {url}")
+        print(f"Connecting to Deepgram: {url}", flush=True)
+        if not self.api_key:
+            print("ERROR: Deepgram API Key is missing!", flush=True)
+            return
+
         try:
             # Increase timeout and disable ping_interval to avoid handshake timeouts
             async with connect(url, additional_headers=extra_headers, ping_interval=None, open_timeout=20) as dg_socket:
-                print("Connected to Deepgram WebSocket")
+                print("Connected to Deepgram WebSocket", flush=True)
                 
                 async def sender():
                     """Forwards audio from client to Deepgram"""

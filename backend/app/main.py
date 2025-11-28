@@ -19,7 +19,9 @@ async def root():
 from app.api.websocket import router as websocket_router
 from app.api.rag import router as rag_router
 from app.api.analytics import router as analytics_router
+from app.api.agents import router as agents_router
 
 app.include_router(websocket_router)
 app.include_router(rag_router)
 app.include_router(analytics_router)
+app.include_router(agents_router)

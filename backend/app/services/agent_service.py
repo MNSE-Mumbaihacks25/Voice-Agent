@@ -36,3 +36,28 @@ class AgentService:
         except Exception as e:
             logger.error(f"Error fetching leads for agent {agent_id}: {e}")
             return []
+
+    async def update_chat_history(self, lead_id: int, history_entry: dict):
+        try:
+            # Fetch current history
+            response = self.supabase.table("ai_dispatch_logs")\
+                .select("chat_history")\
+                .eq("id", lead_id)\
+                .execute()
+                
+            if not response.data:
+                return False
+                
+            current_history = response.data[0].get("chat_history", []) or []
+            current_history.append(history_entry)
+            
+            # Update with new history
+            self.supabase.table("ai_dispatch_logs")\
+                .update({"chat_history": current_history})\
+                .eq("id", lead_id)\
+                .execute()
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error updating chat history for lead {lead_id}: {e}")
+            return False

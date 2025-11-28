@@ -3,6 +3,10 @@ from app.services.deepgram_service import DeepgramService
 from app.core.state import transcript_store
 import logging
 import json
+import datetime
+from app.services.summary_service import SummaryService
+from app.services.agent_service import AgentService
+from app.services.analytics_service import AnalyticsService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -13,13 +17,13 @@ async def websocket_endpoint(
     session_id: str = Query(...),
     agent_name: str = Query("Agent"),
     lead_name: str = Query("Lead"),
+    lead_id: str = Query(None),
     language: str = Query("en")
 ):
     print(f"New WebSocket connection request: {session_id} (Agent: {agent_name}, Lead: {lead_name}, Language: {language})")
     await websocket.accept()
     print(f"WebSocket accepted: {session_id}")
     deepgram_service = DeepgramService()
-    dg_connection = None
     
     # Initialize transcript store for this session
     if session_id not in transcript_store:
@@ -94,11 +98,7 @@ async def websocket_endpoint(
     finally:
         # Save audio to file
         import wave
-        from app.services.summary_service import SummaryService
-        from app.services.agent_service import AgentService
-        from app.services.analytics_service import AnalyticsService
-        import datetime
-
+        
         try:
             if len(audio_buffer) > 0:
                 filename = f"audio_{session_id}.wav"
@@ -114,7 +114,7 @@ async def websocket_endpoint(
             if full_transcript:
                 print(f"Generating summary for session {session_id}...")
                 summary_service = SummaryService()
-                summary = summary_service.generate_summary(full_transcript)
+                summary = await summary_service.generate_summary(full_transcript, lead_name)
                 
                 # Mock Analytics (or use real if available)
                 analytics_service = AnalyticsService()
@@ -130,22 +130,19 @@ async def websocket_endpoint(
                     "session_id": session_id
                 }
                 
-                # Update DB
-                # We need lead_id. But we only have lead_name. 
-                # Ideally, we should pass lead_id in the query param.
-                # For now, we'll try to find the lead by name and agent.
-                agent_service = AgentService()
-                leads = agent_service.get_leads_by_agent(agent_name) # This expects agent_id, but we passed agent_name?
-                # Wait, agent_name passed in query might be ID or Name. 
-                # Let's assume the frontend passes ID as 'agent_name' or we need to fix frontend to pass IDs.
-                
-                # FIX: The frontend should pass IDs.
-                # But for now, let's just print the entry.
                 print(f"Call Summary: {summary}")
                 print(f"History Entry to Save: {history_entry}")
                 
-                # TODO: Actually save to DB once we have lead_id
-                # agent_service.update_chat_history(lead_id, history_entry)
+                if lead_id or lead_name:
+                    print(f"Updating chat history for lead {lead_id} (Name: {lead_name})...")
+                    agent_service = AgentService()
+                    success = await agent_service.update_chat_history(lead_id, history_entry, lead_name=lead_name)
+                    if success:
+                        print(f"Successfully updated chat history for lead {lead_id}")
+                    else:
+                        print(f"Failed to update chat history for lead {lead_id}")
+                else:
+                    print("No lead_id or lead_name provided, skipping history update.")
                 
         except Exception as e:
             logger.error(f"Failed to save audio/summary: {e}")

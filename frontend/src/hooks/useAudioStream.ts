@@ -1,35 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-// Helper function to calculate audio fingerprint
-function calculateFingerprint(audioBuffer: ArrayBuffer): { energy: number, frequency: number } {
-    const int16View = new Int16Array(audioBuffer);
-    
-    // Calculate energy (RMS)
-    let energySum = 0;
-    for (let i = 0; i < int16View.length; i++) {
-        const normalized = int16View[i] / 32768;
-        energySum += normalized * normalized;
-    }
-    const energy = Math.sqrt(energySum / int16View.length);
-    
-    // Calculate frequency (zero crossing rate)
-    let zeroCrossings = 0;
-    for (let i = 1; i < int16View.length; i++) {
-        if ((int16View[i - 1] < 0 && int16View[i] >= 0) || (int16View[i - 1] >= 0 && int16View[i] < 0)) {
-            zeroCrossings++;
-        }
-    }
-    const frequency = zeroCrossings / int16View.length;
-    
-    return { energy, frequency };
-}
 
 export const useAudioStream = () => {
     const [isConnected, setIsConnected] = useState(false);
     const [transcript, setTranscript] = useState<{ text: string, speaker: number, speaker_name?: string, sentiment?: string, profanity?: boolean }[]>([]);
     const [sessionId, setSessionId] = useState<string>("");
     const socketRef = useRef<WebSocket | null>(null);
-    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
     useEffect(() => {
         // Generate a random session ID on mount
@@ -40,15 +16,34 @@ export const useAudioStream = () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
-                    channelCount: 1, // Force Mono
+                    channelCount: 1,
                     echoCancellation: true,
                     noiseSuppression: true,
                     autoGainControl: true,
-                    sampleRate: 48000
+                    sampleRate: 16000 // Try to request 16kHz
                 }
             });
 
-            // Connect to WebSocket with names and language
+            const audioContext = new AudioContext();
+            // Fallback: if browser ignores sampleRate, we need to handle it
+            console.log(`AudioContext sample rate: ${audioContext.sampleRate}`);
+
+            const source = audioContext.createMediaStreamSource(stream);
+
+            await audioContext.audioWorklet.addModule('/audio-processor.js');
+            const workletNode = new AudioWorkletNode(audioContext, 'audio-processor', {
+                processorOptions: {
+                    sampleRate: audioContext.sampleRate
+                }
+            });
+
+            source.connect(workletNode);
+            workletNode.connect(audioContext.destination); // Necessary to keep the processor alive? Usually yes for some browsers, or just don't connect to destination to avoid feedback.
+            // Actually, connecting to destination will play the audio back to the user, which causes echo.
+            // We should NOT connect to destination. But we need to keep the graph alive.
+            // In many browsers, just connecting source -> worklet is enough if the worklet returns true.
+
+            // Connect to WebSocket
             const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}&engine=whisper`);
 
             ws.onopen = () => {
@@ -75,21 +70,22 @@ export const useAudioStream = () => {
 
             socketRef.current = ws;
 
-            // Start MediaRecorder
-            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-            mediaRecorderRef.current = mediaRecorder;
-
-            mediaRecorder.ondataavailable = (event) => {
-                if (event.data.size > 0 && socketRef.current?.readyState === WebSocket.OPEN) {
-                    console.log(`Sending audio chunk: ${event.data.size} bytes`);
+            workletNode.port.onmessage = (event) => {
+                if (socketRef.current?.readyState === WebSocket.OPEN) {
                     socketRef.current.send(event.data);
-                } else {
-                    console.log("Skipping chunk:", event.data.size, socketRef.current?.readyState);
                 }
             };
 
-            mediaRecorder.start(250); // Revert to 250ms for low latency
-            console.log("MediaRecorder started");
+            // Store references for cleanup
+            // We need to store audioContext and workletNode to close them later
+            // But the current ref is for MediaRecorder. We can repurpose or add new refs.
+            // For minimal changes, let's attach them to the socketRef or a new ref?
+            // Let's add a new ref for the context.
+            (socketRef as any).audioContext = audioContext;
+            (socketRef as any).stream = stream;
+            (socketRef as any).workletNode = workletNode;
+
+            console.log("AudioContext started");
 
         } catch (error) {
             console.error("Error starting recording:", error);
@@ -106,28 +102,63 @@ export const useAudioStream = () => {
                 setIsConnected(true);
                 console.log("Connected to WebSocket for file streaming");
 
-                // Read file and stream
-                const arrayBuffer = await file.arrayBuffer();
-                const chunkSize = 16384; // Larger chunks (approx 0.5-1s of audio depending on bitrate)
-                let offset = 0;
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
 
-                const streamInterval = setInterval(() => {
-                    if (offset >= arrayBuffer.byteLength) {
-                        clearInterval(streamInterval);
-                        console.log("File streaming complete");
-                        // Send zero-byte message to indicate end of stream to Deepgram
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(new Uint8Array(0));
+                    // Decode audio using OfflineAudioContext to ensure 16kHz sample rate
+                    // We use a temporary context to decode the original file first to get its duration/properties
+                    const tempCtx = new AudioContext();
+                    const audioBuffer = await tempCtx.decodeAudioData(arrayBuffer);
+
+                    // Now resample to 16kHz using OfflineAudioContext
+                    const targetSampleRate = 16000;
+                    const offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * targetSampleRate, targetSampleRate);
+                    const source = offlineCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(offlineCtx.destination);
+                    source.start();
+
+                    const renderedBuffer = await offlineCtx.startRendering();
+                    const channelData = renderedBuffer.getChannelData(0); // Mono
+
+                    // Convert to Int16 PCM
+                    const int16Data = new Int16Array(channelData.length);
+                    for (let i = 0; i < channelData.length; i++) {
+                        let s = Math.max(-1, Math.min(1, channelData[i]));
+                        int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+
+                    // Send in chunks
+                    const chunkSize = 4096; // 4KB chunks
+                    let offset = 0;
+                    const byteBuffer = int16Data.buffer;
+
+                    const streamInterval = setInterval(() => {
+                        if (offset >= byteBuffer.byteLength) {
+                            clearInterval(streamInterval);
+                            console.log("File streaming complete");
+                            if (ws.readyState === WebSocket.OPEN) {
+                                ws.send(new Uint8Array(0));
+                            }
+                            return;
                         }
-                        return;
-                    }
 
-                    if (ws.readyState === WebSocket.OPEN) {
-                        const chunk = arrayBuffer.slice(offset, offset + chunkSize);
-                        ws.send(chunk);
-                        offset += chunkSize;
-                    }
-                }, 250); // Send every 250ms to simulate real-time more accurately
+                        if (ws.readyState === WebSocket.OPEN) {
+                            const end = Math.min(offset + chunkSize, byteBuffer.byteLength);
+                            const chunk = byteBuffer.slice(offset, end);
+                            ws.send(chunk);
+                            offset += chunkSize;
+                        } else {
+                            clearInterval(streamInterval);
+                        }
+                    }, 50); // Send faster than real-time if desired, or match playback speed. 50ms for 4KB (approx 125ms audio) is ~2.5x speed.
+
+                    // Clean up temp context
+                    tempCtx.close();
+
+                } catch (decodeError) {
+                    console.error("Error decoding audio file:", decodeError);
+                }
             };
 
             ws.onmessage = (event) => {
@@ -151,11 +182,20 @@ export const useAudioStream = () => {
     }, [sessionId]);
 
     const stopRecording = useCallback(() => {
-        if (mediaRecorderRef.current) {
-            mediaRecorderRef.current.stop();
-            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        }
         if (socketRef.current) {
+            const ctx = (socketRef.current as any).audioContext;
+            const stream = (socketRef.current as any).stream;
+            const worklet = (socketRef.current as any).workletNode;
+
+            if (stream) {
+                stream.getTracks().forEach((track: any) => track.stop());
+            }
+            if (worklet) {
+                worklet.disconnect();
+            }
+            if (ctx) {
+                ctx.close();
+            }
             socketRef.current.close();
         }
         setIsConnected(false);

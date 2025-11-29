@@ -12,13 +12,13 @@ class SummaryService:
             api_key=settings.GROQ_API_KEY
         )
 
-    async def generate_summary(self, transcript: str, lead_name: str = "Lead") -> str:
+    async def generate_summary(self, transcript: str, lead_name: str = "Lead", agent_name: str = "Agent") -> str:
         if not transcript:
             return "No transcript available."
 
         prompt = f"""
         You are an expert Summarizing Agent for financial sales calls.
-        Summarize the following conversation between an Agent and {lead_name}.
+        Summarize the following conversation between {agent_name} and {lead_name}.
         
         Focus on:
         1. Key topics discussed (e.g., specific funds, retirement goals).

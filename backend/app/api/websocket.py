@@ -114,7 +114,7 @@ async def websocket_endpoint(
             if full_transcript:
                 print(f"Generating summary for session {session_id}...")
                 summary_service = SummaryService()
-                summary = await summary_service.generate_summary(full_transcript, lead_name)
+                summary = await summary_service.generate_summary(full_transcript, lead_name=lead_name, agent_name=agent_name)
                 
                 # Mock Analytics (or use real if available)
                 analytics_service = AnalyticsService()

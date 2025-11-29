@@ -12,7 +12,7 @@ export const useAudioStream = () => {
         setSessionId(Math.random().toString(36).substring(7));
     }, []);
 
-    const startRecording = useCallback(async (agentName: string, leadName: string, language: string = "en") => {
+    const startRecording = useCallback(async (agentId: string, agentName: string, leadId: string, leadName: string, language: string = "en") => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -25,11 +25,25 @@ export const useAudioStream = () => {
             });
 
             // Connect to WebSocket with names and language
-            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`);
+            // Use dynamic WebSocket URL based on current host if not localhost, or fallback to localhost:8000
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
+            // For now, keep it simple but allow for non-localhost if needed, or just stick to localhost:8000 if that's the setup.
+            // But better to catch errors.
+            const wsUrl = `ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_id=${encodeURIComponent(agentId)}&agent_name=${encodeURIComponent(agentName)}&lead_id=${encodeURIComponent(leadId)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`;
+
+            console.log("Connecting to:", wsUrl);
+            const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 setIsConnected(true);
                 console.log("Connected to WebSocket");
+            };
+
+            ws.onerror = (event) => {
+                console.error("WebSocket Error:", event);
+                alert("WebSocket Connection Failed. Ensure Backend is running on port 8000.");
+                setIsConnected(false);
             };
 
             ws.onmessage = (event) => {
@@ -45,6 +59,7 @@ export const useAudioStream = () => {
 
             ws.onclose = () => {
                 setIsConnected(false);
+                console.log("WebSocket Closed");
             };
 
             socketRef.current = ws;
@@ -55,25 +70,25 @@ export const useAudioStream = () => {
 
             mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0 && socketRef.current?.readyState === WebSocket.OPEN) {
-                    console.log(`Sending audio chunk: ${event.data.size} bytes`);
+                    // console.log(`Sending audio chunk: ${event.data.size} bytes`);
                     socketRef.current.send(event.data);
-                } else {
-                    console.log("Skipping chunk:", event.data.size, socketRef.current?.readyState);
                 }
             };
 
-            mediaRecorder.start(250); // Revert to 250ms for low latency
+            mediaRecorder.start(250);
             console.log("MediaRecorder started");
 
         } catch (error) {
             console.error("Error starting recording:", error);
+            alert("Error starting recording: " + error);
+            setIsConnected(false);
         }
     }, [sessionId]);
 
-    const streamAudioFile = useCallback(async (file: File, agentName: string, leadName: string, language: string = "en") => {
+    const streamAudioFile = useCallback(async (file: File, agentId: string, agentName: string, leadId: string, leadName: string, language: string = "en") => {
         try {
             // Connect to WebSocket with names and language
-            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_name=${encodeURIComponent(agentName)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`);
+            const ws = new WebSocket(`ws://localhost:8000/ws/audio?session_id=${sessionId}&agent_id=${encodeURIComponent(agentId)}&agent_name=${encodeURIComponent(agentName)}&lead_id=${encodeURIComponent(leadId)}&lead_name=${encodeURIComponent(leadName)}&language=${language}`);
             socketRef.current = ws;
 
             ws.onopen = async () => {
